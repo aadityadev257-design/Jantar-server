@@ -1,7 +1,8 @@
 // ============================================================
 // JANTAR MANTAR: CHAOS PROTOCOL — SERVER (Colyseus)
 // ============================================================
-import { Room, Server } from "colyseus";
+import pkg from "colyseus";
+const { Room, Server } = pkg;
 import { Schema, MapSchema, defineTypes } from "@colyseus/schema";
 import express from "express";
 import { createServer } from "http";
