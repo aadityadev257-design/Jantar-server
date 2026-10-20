@@ -1,0 +1,14 @@
+{
+  "name": "jantar-server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "colyseus": "^0.15.17",
+    "@colyseus/schema": "^2.0.30",
+    "express": "^4.18.2"
+  }
+}
