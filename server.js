@@ -1,32 +1,63 @@
 // ============================================================
 // JANTAR MANTAR: CHAOS PROTOCOL — SERVER (Colyseus)
 // ============================================================
-import { Room, Client } from "colyseus";
-import { Schema, type, MapSchema } from "@colyseus/schema";
+import { Room, Server } from "colyseus";
+import { Schema, MapSchema, defineTypes } from "@colyseus/schema";
+import express from "express";
+import { createServer } from "http";
 
 const MAP_W = 1200, MAP_H = 900;
 const CAPTURE_RADIUS = 140;
 const NPC_RECRUIT_RADIUS = 50;
 const TICK_RATE = 20; // Hz
 
+// ---------- SCHEMAS (defineTypes — no decorators) ----------
 class Player extends Schema {
-  @type("string") side = "protestor";
-  @type("number") x = 400;
-  @type("number") y = 500;
-  @type("boolean") shieldActive = false;
+  constructor() {
+    super();
+    this.side = "protestor";
+    this.x = 400;
+    this.y = 500;
+    this.shieldActive = false;
+  }
 }
-class NPC extends Schema {
-  @type("number") x = 0;
-  @type("number") y = 0;
-  @type("string") recruitedBy = "none"; // "protestor" | "police" | "none"
-}
-class State extends Schema {
-  @type({ map: Player }) players = new MapSchema();
-  @type({ map: NPC }) npcs = new MapSchema();
-  @type("number") meter = 50; // 0 = police win, 100 = protestor win
-}
+defineTypes(Player, {
+  side: "string",
+  x: "number",
+  y: "number",
+  shieldActive: "boolean",
+});
 
-export class GameRoom extends Room {
+class NPC extends Schema {
+  constructor() {
+    super();
+    this.x = 0;
+    this.y = 0;
+    this.recruitedBy = "none";
+  }
+}
+defineTypes(NPC, {
+  x: "number",
+  y: "number",
+  recruitedBy: "string",
+});
+
+class State extends Schema {
+  constructor() {
+    super();
+    this.players = new MapSchema();
+    this.npcs = new MapSchema();
+    this.meter = 50;
+  }
+}
+defineTypes(State, {
+  players: { map: Player },
+  npcs: { map: NPC },
+  meter: "number",
+});
+
+// ---------- ROOM ----------
+class GameRoom extends Room {
   onCreate() {
     this.setState(new State());
     this.maxClients = 20;
@@ -39,7 +70,7 @@ export class GameRoom extends Room {
       const npc = new NPC();
       npc.x = Math.random() * (MAP_W - 200) + 100;
       npc.y = Math.random() * (MAP_H - 200) + 100;
-      this.state.npcs.set(`npc_${i}_${Date.now()}`, npc);
+      this.state.npcs.set(`npc_${i}_${Date.now()}_${Math.random()}`, npc);
     }
   }
 
@@ -62,31 +93,24 @@ export class GameRoom extends Room {
         p.y = clamp(message.y, 0, MAP_H);
         break;
 
-      case "nara": {
-        // XP boost is client-side visual; server broadcasts for others
+      case "nara":
         this.broadcast("nara", { text: message.text, x: p.x, y: p.y }, { except: client });
         break;
-      }
 
-      case "push": {
-        // Protestor push: damages nearby barricades / scatters police NPCs
+      case "push":
         this.broadcast("push", { x: p.x, y: p.y }, { except: client });
-        // If near capture zone, boost meter slightly
         if (dist(p.x, p.y, MAP_W / 2, MAP_H / 2) < CAPTURE_RADIUS + 30) {
           this.state.meter = clamp(this.state.meter + 2, 0, 100);
         }
         break;
-      }
 
-      case "shield": {
+      case "shield":
         p.shieldActive = message.active;
         break;
-      }
 
       case "lathi": {
-        if (p.shieldActive) return; // cannot attack while shielded
+        if (p.shieldActive) return;
         this.broadcast("push", { x: p.x, y: p.y }, { except: client });
-        // Lathi scatters nearby protestor-recruited NPCs
         this.state.npcs.forEach((npc) => {
           if (npc.recruitedBy === "protestor" && dist(p.x, p.y, npc.x, npc.y) < 80) {
             npc.recruitedBy = "none";
@@ -101,10 +125,10 @@ export class GameRoom extends Room {
 
   tick(dt) {
     const players = Array.from(this.state.players.values());
-    const protestors = players.filter(p => p.side === "protestor");
-    const police = players.filter(p => p.side === "police");
+    const protestors = players.filter((p) => p.side === "protestor");
+    const police = players.filter((p) => p.side === "police");
 
-    // --- NPC recruitment ---
+    // NPC recruitment
     this.state.npcs.forEach((npc) => {
       if (npc.recruitedBy !== "none") return;
       for (const p of protestors) {
@@ -113,10 +137,9 @@ export class GameRoom extends Room {
           break;
         }
       }
-      // Police can also "recruit" (disperse) NPCs, but slower — handled via lathi.
     });
 
-    // --- Recruited NPCs follow their recruiter (simplified: move toward nearest protestor) ---
+    // Follow recruiter
     this.state.npcs.forEach((npc) => {
       if (npc.recruitedBy === "protestor" && protestors.length > 0) {
         const nearest = protestors.reduce((a, b) =>
@@ -127,15 +150,16 @@ export class GameRoom extends Room {
       }
     });
 
-    // --- Tug-of-war meter ---
+    // Tug-of-war
     let protestorsInZone = 0;
     for (const p of protestors) {
       if (dist(p.x, p.y, MAP_W / 2, MAP_H / 2) < CAPTURE_RADIUS) protestorsInZone++;
     }
-    // Recruited NPCs in zone count too
     this.state.npcs.forEach((npc) => {
-      if (npc.recruitedBy === "protestor" &&
-          dist(npc.x, npc.y, MAP_W / 2, MAP_H / 2) < CAPTURE_RADIUS) {
+      if (
+        npc.recruitedBy === "protestor" &&
+        dist(npc.x, npc.y, MAP_W / 2, MAP_H / 2) < CAPTURE_RADIUS
+      ) {
         protestorsInZone += 0.3;
       }
     });
@@ -145,7 +169,6 @@ export class GameRoom extends Room {
       if (dist(p.x, p.y, MAP_W / 2, MAP_H / 2) < CAPTURE_RADIUS) policeInZone++;
     }
 
-    // Meter dynamics: protestors push +, police push -
     const delta = (protestorsInZone * 1.5 - policeInZone * 2.5) * (dt / 1000);
     this.state.meter = clamp(this.state.meter + delta, 0, 100);
   }
@@ -156,18 +179,22 @@ export class GameRoom extends Room {
 }
 
 // ---------- UTILS ----------
-function dist(x1, y1, x2, y2) { return Math.hypot(x2 - x1, y2 - y1); }
-function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(x1, y1, x2, y2) {
+  return Math.hypot(x2 - x1, y2 - y1);
+}
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
 
-// ---------- SERVER BOOTSTRAP ----------
-import { Server } from "colyseus";
-import { createServer } from "http";
-import express from "express";
-
+// ---------- BOOTSTRAP ----------
 const app = express();
+app.get("/", (_req, res) => res.send("Jantar Mantar server is alive 🪧"));
 const server = createServer(app);
 const gameServer = new Server({ server });
 gameServer.define("jantar_room", GameRoom);
-gameServer.listen(process.env.PORT || 2567);
-console.log(`Listening on ws://localhost:${process.env.PORT || 2567}`);
+const PORT = process.env.PORT || 2567;
+gameServer.listen(PORT);
+console.log(`Listening on ws://localhost:${PORT}`);
